@@ -28,9 +28,12 @@
 @donation https://www.paypal.me/RobUrquhart
 @link Reaper http://reaper.fm
 @link Forum Thread http://reaper.fm
-@version 1.3.6
+@version 1.4
 @author RobU
 @changelog
+	v1.4
+	Added per-note upper-octave exclusion for the Octave X2 option
+
 	v1.3.6
 	Added proper note shuffling using Fisher-Yates algorithm (polyphonic)	
 	Removed the shitty 'Permute' scale hack :)
@@ -65,7 +68,7 @@ m = {} -- all ex machina data
 -- user changeable defaults are marked with "(option)"
 m.OS = reaper.GetOS()
 -- window
-m.win_title = "RobU : MIDI Ex Machina - v1.3.6"; m.win_dockstate = 0
+m.win_title = "MIDI Ex Machina - v1.4"; m.win_dockstate = 0
 m.win_x = 10; m.win_y = 10; m.win_w = 900; m.win_h = 280 -- window dimensions
 m.win_bg = {0, 0, 0} -- background colour
 m.def_zoom = 4 -- 100% (option)
@@ -97,6 +100,7 @@ m.rndFirstNoteF = true; -- first note is always root (option)
 --m.rndPermuteF = false; 
 m.pHash = 0 -- midi item state changes
 m.rndOctProb = 1 -- (option - min 0, max 10)
+m.octExcl = {} -- per-slider flag (1-13): true = note never placed in the upper octave by Octave X2
 
 -- sequence generator
 m.seqF = true -- generate sequence (option)
@@ -339,7 +343,14 @@ function GetUniqueNote(note_in)
 	rand_note = (note_in[0]==1 and m.rndFirstNoteF) and  -- select on note pos 1 && first note is root flag
 		m.root or m.root + m.noteProbTable[math.random(1, #m.noteProbTable)] -- get appropriate note (fixed/random)
 		
-	if m.rndOctX2F then rand_note = rand_note + m.octProbTable[math.random(1, #m.octProbTable)] end	-- get octave
+	if m.rndOctX2F then
+		local oct = m.octProbTable[math.random(1, #m.octProbTable)] -- get octave
+		local excluded = false
+		for idx, offset in ipairs(m.preNoteProbTable) do -- find the slider that produced this note
+			if m.root + offset == rand_note and m.octExcl[idx] then excluded = true; break end
+		end
+		if not excluded then rand_note = rand_note + oct end -- excluded notes stay in the base octave
+	end
 	
 	return rand_note
 	
@@ -1118,6 +1129,12 @@ local probSldrText = e.Textbox:new({1}, nx, 210, 510, 20, e.col_grey5, "Note Wei
 local octProbSldr = e.Vert_Slider:new({1}, nx+(np*13) + 10,  ny, nw, nh, e.col_blue, "%", e.Arial, m.font_sz, e.col_grey8, m.rndOctProb, 0, 0, 10, 1)
 local octProbText = e.Textbox:new({1}, nx+(np*13) + 10, 210, (nw), 20, e.col_grey5, "Oct", e.Arial, m.font_sz, e.col_grey7) 
 
+-- Upper-octave exclusion toggles (one per note slider) - shown when Octave X2 is on
+local t_octExclBtns = {}
+for i = 1, 13 do
+	t_octExclBtns[i] = e.Button:new({1}, nx+(np*(i-1)), 233, nw, 18, e.col_grey5, "+12", e.Arial, m.font_sz, e.col_grey8)
+end
+
 -- Note randomiser options
 local noteOptionsCb = e.Checkbox:new({1}, nx+(np*14)+10, ny+30, 30, 30, e.col_orange, "", e.Arial, m.font_sz, e.col_grey8, {0,0,0},   {"All / Sel Notes", "1st Note = Root", "Octave X2"})
 local noteOptionText = e.Textbox:new({1}, nx+(np*14)+20, 210, (nw*4), 20, e.col_grey5, "Options", e.Arial, m.font_sz, e.col_grey7)
@@ -1430,6 +1447,29 @@ noteOptionsCb.onLClick = function() -- Randomiser options toggle logic
 
 end
 
+function UpdateOctExclBtn(i) -- show a toggle's state: orange "off" = excluded from upper octave
+	local b = t_octExclBtns[i]
+	local col = m.octExcl[i] and e.col_orange or e.col_grey5
+	b.r, b.g, b.b, b.a = table.unpack(col)
+	b.label = m.octExcl[i] and "off" or "+12"
+end
+
+function SaveOctExcl() -- write the exclusions to project ext state (nil when none are set)
+	local list = {}
+	for i = 1, 13 do if m.octExcl[i] then list[#list + 1] = i end end
+	pExtState.octExcl = #list > 0 and list or nil
+	pExtSaveStateF = true
+end
+
+for i = 1, 13 do
+	t_octExclBtns[i].onLClick = function() -- toggle upper-octave exclusion for note i
+		if not m.rndOctX2F then return end
+		m.octExcl[i] = not m.octExcl[i] or nil
+		UpdateOctExclBtn(i)
+		SaveOctExcl()
+	end
+end
+
 keyDrop.onLClick = function() -- Root Key droplist
 
 	m.key = keyDrop.val1
@@ -1491,6 +1531,9 @@ octProbText.onRClick = function() -- Reset octave probability slider
 
 	if result == 1 then 
 		octProbSldr.val1 = m.rndOctProb
+		m.octExcl = {} -- also clear upper-octave exclusions
+		for i = 1, 13 do UpdateOctExclBtn(i) end
+		SaveOctExcl()
 		
 		if pExtState.rndOctProb then -- write the new proj ext state
 				pExtState.rndOctProb = nil
@@ -1570,6 +1613,12 @@ function SetDefaultRndSliders() -- Set default randomiser sliders
 	else
 		octProbSldr.val1 = m.rndOctProb
 	end
+
+	m.octExcl = {} -- upper-octave exclusions (default: none)
+	if pExtState.octExcl then
+		for _, i in ipairs(pExtState.octExcl) do m.octExcl[i] = true end
+	end
+	for i = 1, 13 do UpdateOctExclBtn(i) end
 end
 
 
@@ -2034,6 +2083,7 @@ function DrawGUI()
 	for key, check in pairs(t_Checkboxes) do check:draw() end
 	for key, radio in pairs(t_RadButtons) do radio:draw() end	
 	for key, btn in pairs(t_Buttons) do btn:draw() end
+	if m.rndOctX2F then for key, btn in pairs(t_octExclBtns) do btn:draw() end end
 	for key, dlist in pairs(t_Droplists) do dlist:draw() end 
 	--for key, knb in pairs(t_Knobs) do knb:draw() end
 	for key, rsliders in pairs(t_RSliders) do rsliders:draw() end
